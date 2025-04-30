@@ -1,0 +1,7 @@
+dlls/.vs*
+dlls/Debug_Metamod*
+dlls/Release_Metamod*
+*.o
+*.so
+*.map
+*.ipch
