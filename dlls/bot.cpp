@@ -36,6 +36,14 @@
 #include "bot_func.h"
 #include "waypoint.h"
 #include "bot_weapons.h"
+#include "bot_ai.h"
+#include <curl/curl.h>
+#include <json/json.h>
+
+// AI integration
+static CURL *ai_curl;
+static CURLcode ai_res;
+static const char* ai_server_url = "http://127.0.0.1:5001/ai/decision";
 
 #include <cctype>
 //#include <sys/stat.h>
@@ -157,6 +165,19 @@ extern float msecval;
 
 
 void BotSpawnInit( bot_t *pBot )
+{
+    // Initialize AI
+    AI_Init();
+    
+    // Rest of the original BotSpawnInit code...
+{
+    // Initialize AI curl if not already done
+    if (!ai_curl) {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        ai_curl = curl_easy_init();
+    }
+
+    // Rest of the original BotSpawnInit code...
 {
 	int i;
 //	ALERT(at_console, "BotSpawnInit\n");
@@ -1437,6 +1458,94 @@ void BotCheckRole( bot_t *pBot)
 
 void BotThink( bot_t *pBot )
 {
+    // Get AI decision
+    AI_Decision ai_decision = GetAIDecision(pBot);
+    
+    // Apply AI decision
+    ApplyAIDecision(pBot, ai_decision);
+    
+    // Rest of the original BotThink code...
+    // Gather bot state for AI
+    Json::Value state;
+    
+    edict_t *pEdict = pBot->pEdict;
+    
+    // Position
+    state["position"]["x"] = pEdict->v.origin.x;
+    state["position"]["y"] = pEdict->v.origin.y;
+    state["position"]["z"] = pEdict->v.origin.z;
+    
+    // Health
+    state["health"] = pEdict->v.health;
+    
+    // Ammo
+    Json::Value ammo;
+    for (int i = 0; i < MAX_WEAPONS; i++) {
+        if (pBot->ammo[i] > 0) {
+            ammo[weapon_defs[i].name] = pBot->ammo[i];
+        }
+    }
+    state["ammo"] = ammo;
+    
+    // Team
+    state["team"] = pBot->bot_team;
+    
+    // Game mode
+    state["game_mode"] = (mod_id == CTF_DLL) ? "ctf" : 
+                         (mod_id == SI_DLL) ? "sci" : 
+                         "deathmatch";
+    
+    // Current state
+    state["state"] = pBot->b_engaging_enemy ? "attacking" : 
+                     (pBot->waypoint_goal != -1) ? "moving" : 
+                     "idle";
+    
+    // Query AI for decision
+    if (ai_curl) {
+        Json::FastWriter writer;
+        std::string json = writer.write(state);
+        
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        
+        curl_easy_setopt(ai_curl, CURLOPT_URL, ai_server_url);
+        curl_easy_setopt(ai_curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(ai_curl, CURLOPT_POSTFIELDS, json.c_str());
+        
+        ai_res = curl_easy_perform(ai_curl);
+        
+        // Process AI decision
+        if (ai_res == CURLE_OK) {
+            Json::Value response;
+            Json::Reader reader;
+            std::string response_str;
+            
+            // Get response from curl
+            curl_easy_setopt(ai_curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+            curl_easy_setopt(ai_curl, CURLOPT_WRITEDATA, &response_str);
+            
+            if (reader.parse(response_str, response)) {
+                std::string action = response["action"].asString();
+                float priority = response["priority"].asFloat();
+                
+                // Adjust bot behavior based on AI decision
+                if (action == "attack" && !pBot->b_engaging_enemy) {
+                    pBot->b_engaging_enemy = TRUE;
+                    pBot->f_engage_enemy_check = gpGlobals->time + 1.0f;
+                }
+                else if (action == "defend" && pBot->b_engaging_enemy) {
+                    pBot->b_engaging_enemy = FALSE;
+                }
+                else if (action == "move") {
+                    pBot->f_look_for_waypoint_time = gpGlobals->time;
+                }
+            }
+        }
+        
+        curl_slist_free_all(headers);
+    }
+
+    // Rest of the original BotThink code...
 //	ALERT(at_console, "BotThink\n");
 	int index = 0;
 	Vector v_diff;			   // vector from previous to current location
