@@ -1,30 +1,40 @@
-//
+//=============================================================================
 // HPB bot - botman's High Ping Bastard bot
 //
-// (http://planethalflife.com/botman/)
+// Main bot implementation file for Half-Life and derivative mods.
+// Contains core logic for bot AI, movement, combat, and integration with the
+// game engine. This file defines global variables, constants, and key bot
+// functions, including initialization, AI decision-making, and mod-specific logic.
 //
-// bot.cpp
-//
+// Project: HPB Bot (http://planethalflife.com/botman/)
+// File   : bot.cpp
+//=============================================================================
 
+//----------------------------------------------------------------------------- 
+// Standard and platform-specific includes
+//----------------------------------------------------------------------------- 
 #ifndef __linux__
-#include <io.h>
+#include <io.h>              // Windows: file input/output
 #endif
 
-#include <fcntl.h>
+#include <fcntl.h>           // File control options
 
 #ifndef __linux__
-#include <sys\stat.h>
+#include <sys\stat.h>        // Windows: file status
 #else
-#include <string.h>
-#include <sys/stat.h>
+#include <string.h>          // Linux: string operations
+#include <sys/stat.h>        // Linux: file status
 #endif
 
+//----------------------------------------------------------------------------- 
+// Game/mod engine includes
+//----------------------------------------------------------------------------- 
 #ifndef METAMOD_BUILD
-   #include "extdll.h"
-   #include "enginecallback.h"
-   #include "util.h"
-   #include "cbase.h"
-   #include "entity_state.h"
+   #include "extdll.h"           // Valve engine DLL interface
+   #include "enginecallback.h"   // Engine callbacks
+   #include "util.h"             // Utility functions
+   #include "cbase.h"            // Base entity class
+   #include "entity_state.h"     // Entity state info
 #else
    #include <extdll.h>
    #include <dllapi.h>
@@ -32,117 +42,123 @@
    #include <meta_api.h>
 #endif
 
-#include "bot.h"
-#include "bot_func.h"
-#include "waypoint.h"
-#include "bot_weapons.h"
-#include "bot_ai.h"
-#include <curl/curl.h>
-#include <json/json.h>
+//----------------------------------------------------------------------------- 
+// Bot-specific includes
+//----------------------------------------------------------------------------- 
+#include "bot.h"                // Bot data structures and prototypes
+#include "bot_func.h"           // Bot utility functions
+#include "waypoint.h"           // Waypoint navigation system
+#include "bot_weapons.h"        // Bot weapon definitions
+#include "bot_ai.h"             // AI logic and integration
+#include <curl/curl.h>          // CURL for HTTP requests (AI integration)
+#include <json/json.h>          // JSON parsing for AI responses
 
-// AI integration
-static CURL *ai_curl;
-static CURLcode ai_res;
-static const char* ai_server_url = "http://127.0.0.1:5001/ai/decision";
+//----------------------------------------------------------------------------- 
+// AI integration globals
+//----------------------------------------------------------------------------- 
+static CURL *ai_curl;           // CURL handle for AI server requests
+static CURLcode ai_res;         // CURL result code
+static const char* ai_server_url = "http://127.0.0.1:5001/ai/decision"; // Local AI server endpoint
 
-#include <cctype>
-//#include <sys/stat.h>
+#include <cctype>               // Character classification
+//#include <sys/stat.h>         // (Optional) file status
 
 
-extern int mod_id;
-extern WAYPOINT waypoints[MAX_WAYPOINTS];
-extern int num_waypoints;  // number of waypoints currently in use
-extern int default_bot_skill;
-extern edict_t *pent_info_ctfdetect;
-extern bool checked_teamplay;
-extern int max_team_players[4];
-extern int team_class_limits[4];
-extern int min_bots;
-extern int max_bots;
-extern int max_teams;
-extern bot_research_t g_Researched[2][NUM_RESEARCH_OPTIONS];
-extern float is_team_play;
-extern edict_t *clients[32];
-static FILE *fp;
+//----------------------------------------------------------------------------- 
+// Global variables and constants
+//----------------------------------------------------------------------------- 
+extern int mod_id;                         // Current mod/game identifier
+extern WAYPOINT waypoints[MAX_WAYPOINTS];  // All waypoints in the map
+extern int num_waypoints;                  // Number of waypoints currently in use
+extern int default_bot_skill;              // Default skill level for new bots
+extern edict_t *pent_info_ctfdetect;       // CTF info entity
+extern bool checked_teamplay;              // Whether teamplay mode has been checked
+extern int max_team_players[4];            // Max players per team
+extern int team_class_limits[4];           // Class limits per team
+extern int min_bots;                       // Minimum number of bots allowed
+extern int max_bots;                       // Maximum number of bots allowed
+extern int max_teams;                      // Maximum number of teams
+extern bot_research_t g_Researched[2][NUM_RESEARCH_OPTIONS]; // Research status for Science & Industry mod
+extern float is_team_play;                 // Whether teamplay is enabled
+extern edict_t *clients[32];               // Client edict pointers
+static FILE *fp;                           // General-purpose file pointer
 
 //double pi = 3.1415926535897932384626433832795;
 
-#define PLAYER_SEARCH_RADIUS     40.0f
+#define PLAYER_SEARCH_RADIUS     40.0f     // Search radius for player proximity checks
 
+//----------------------------------------------------------------------------- 
+// Bot state and configuration variables
+//----------------------------------------------------------------------------- 
+bot_t bots[32];                           // Array of all bots (max 32)
+bool b_observer_mode = FALSE;             // If TRUE, bots are in observer mode
+bool b_chat_debug = FALSE;                 // If TRUE, bots print debug chat
+bool b_botdontshoot = FALSE;              // If TRUE, bots never shoot
+extern bool b_random_color;               // If TRUE, bots use random colors
+extern bot_weapon_t weapon_defs[MAX_WEAPONS]; // Weapon definitions
+extern bot_weapon_select_t valve_weapon_select[]; // Weapon selection table
+extern edict_t *listenserver_edict;       // Edict for listen server client
+extern void RoleCount();                  // Role counting function
+extern void RoleDetermine();              // Role determination function
+extern char *RoleToString(int role);      // Converts role ID to string
+extern char *SubroleToString(int subrole);// Converts subrole ID to string
 
-bot_t bots[32];   // max of 32 bots in a game
-bool b_observer_mode = FALSE;
-bool b_chat_debug = FALSE;
-bool b_botdontshoot = FALSE;
-extern bool b_random_color;
-extern bot_weapon_t weapon_defs[MAX_WEAPONS];
-extern bot_weapon_select_t valve_weapon_select[];
-extern edict_t *listenserver_edict;
-extern void RoleCount();
-extern void RoleDetermine();
-extern char *RoleToString(int role);
-extern char *SubroleToString(int subrole);
+int number_names = 0;                     // Number of bot names loaded
 
-int number_names = 0;
+#define MAX_BOT_NAMES 100                 // Max number of bot names
+#define VALVE_MAX_SKINS    10             // Max skins for Valve mod
+#define GEARBOX_MAX_SKINS  20             // Max skins for Gearbox mod
 
-#define MAX_BOT_NAMES 100
-
-#define VALVE_MAX_SKINS    10
-#define GEARBOX_MAX_SKINS  20
-
-// indicate which models are currently used for random model allocation
+// Arrays for random model/skin allocation
 bool valve_skin_used[VALVE_MAX_SKINS] = {
-	FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE};
-		
-// store the names of the models...
+    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE};
+
+// Model names for Valve bots
 char *valve_bot_skins[VALVE_MAX_SKINS] = {
-	"barney", "gina", "gman", "gordon", "helmet",
-	"hgrunt", "recon", "robo", "scientist", "zombie"};
-				
+    "barney", "gina", "gman", "gordon", "helmet",
+    "hgrunt", "recon", "robo", "scientist", "zombie"};
+
 // store the player names for each of the models...
 char *valve_bot_names[VALVE_MAX_SKINS] = {
-	"Barney", "Gina", "G-Man", "Gordon", "Helmet",
-	"H-Grunt", "Recon", "Robo", "Scientist", "Zombie"};
-						
-char bot_names[MAX_BOT_NAMES][BOT_NAME_LEN+1];
-						
-// how often (out of 1000 times) the bot will pause, based on bot skill
-float pause_frequency[5] = {4, 7, 10, 15, 20};
-						
+    "Barney", "Gina", "G-Man", "Gordon", "Helmet",
+    "H-Grunt", "Recon", "Robo", "Scientist", "Zombie"};
+
+char bot_names[MAX_BOT_NAMES][BOT_NAME_LEN+1]; // List of all possible bot names
+
+// Bot pause frequency and timing (indexed by skill)
+float pause_frequency[5] = {4, 7, 10, 15, 20}; // How often bots pause (per 1000 ticks)
 float pause_time[5][2] = {
-{0.2f, 0.5f}, {0.5f, 1.0f}, {0.7f, 1.3f}, {1.0f, 1.7f}, {1.2f, 2.0f}};
+{0.2f, 0.5f}, {0.5f, 1.0f}, {0.7f, 1.3f}, {1.0f, 1.7f}, {1.2f, 2.0f}}; // Pause duration ranges
 
-int yaw_speed[5] = {786,640,384,256,192};
-int pitch_speed[5] = {832,786,640,384,256};
-float speed_mod[5] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+// Bot turning and speed parameters (indexed by skill)
+int yaw_speed[5] = {786,640,384,256,192};       // Yaw turning speed
+int pitch_speed[5] = {832,786,640,384,256};     // Pitch turning speed
+float speed_mod[5] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f}; // Speed modifiers
 
+// Bot sound sensitivity (hearing distance, by skill)
 float sound_sense[5] = {768, 512, 384, 256, 128};
 
-// percentage to defend { team1, team2 }
-float g_flDefend[2] = { 0.5f, 0.5f };
-int g_iDefendGoal[2] = { 0, 0 };
-// percentage to attack { team1, team2 }
-float g_flAttack[2] = { 0.5f, 0.5f };
-int g_iAttackGoal[2] = { 0, 0 };
-// actual defending amount
-int g_iDefendCount[2] = { 0, 0 };
-// actual attack amount
-int g_iAttackCount[2] = { 0, 0 };
-// Science and Industry, current team scores
-long g_lTeamScore[2] = {0, 0};
-// Science and Industry, current sci count
-int g_iSciCount[2] = {0, 0};
+// Team/strategy variables (for teamplay mods)
+float g_flDefend[2] = { 0.5f, 0.5f };           // % of bots to defend (per team)
+int g_iDefendGoal[2] = { 0, 0 };                // Current defend goal (per team)
+float g_flAttack[2] = { 0.5f, 0.5f };           // % of bots to attack (per team)
+int g_iAttackGoal[2] = { 0, 0 };                // Current attack goal (per team)
+int g_iDefendCount[2] = { 0, 0 };               // Number of bots defending
+int g_iAttackCount[2] = { 0, 0 };               // Number of bots attacking
+long g_lTeamScore[2] = {0, 0};                  // Team scores (Science & Industry)
+int g_iSciCount[2] = {0, 0};                    // Scientist count (Science & Industry)
 
-/*							
-// TheFatal's method for calculating the msecval
+/*
+// TheFatal's method for calculating the msecval (timing helper)
 extern int msecnum;
 extern float msecdel;
 extern float msecval;
 */
-#define CREATE_FAKE_CLIENT (*g_engfuncs.pfnCreateFakeClient)
+#define CREATE_FAKE_CLIENT (*g_engfuncs.pfnCreateFakeClient) // Macro to create a fake client (bot)
 
-
-
+//----------------------------------------------------------------------------- 
+// Player entity creation (Windows DLL linkage)
+//----------------------------------------------------------------------------- 
 #ifndef METAMOD_BUILD
    #ifndef __linux__
    extern HINSTANCE h_Library;
@@ -151,202 +167,211 @@ extern float msecval;
    #endif
 
    // this is the LINK_ENTITY_TO_CLASS function that creates a player (bot)
+   // Used by the engine to instantiate a player entity (bot or human)
    void player( entvars_t *pev )
    {
-	   static LINK_ENTITY_FUNC otherClassName = NULL;
-	   if (otherClassName == NULL)
-		   otherClassName = (LINK_ENTITY_FUNC)GetProcAddress(h_Library, "player");
-	   if (otherClassName != NULL)
-	   {
-		   (*otherClassName)(pev);
-	   }
+       static LINK_ENTITY_FUNC otherClassName = NULL;
+       if (otherClassName == NULL)
+           otherClassName = (LINK_ENTITY_FUNC)GetProcAddress(h_Library, "player");
+       if (otherClassName != NULL)
+       {
+           (*otherClassName)(pev);
+       }
    }
 #endif
 
 
+//----------------------------------------------------------------------------- 
+// Purpose: Initializes all bot state and variables when a new bot is spawned.
+// This includes AI setup, movement, waypoint, combat, and mod-specific features.
+// Called after a bot entity is created or respawned.
+// Args:
+//   pBot - pointer to the bot's data structure to initialize
+//----------------------------------------------------------------------------- 
 void BotSpawnInit( bot_t *pBot )
 {
-    // Initialize AI
+    // Initialize the AI system (sets up any global AI state, if needed)
     AI_Init();
     
-    // Rest of the original BotSpawnInit code...
-{
-    // Initialize AI curl if not already done
+    // --- AI CURL SETUP ---
+    // If not already done, initialize the CURL library for AI HTTP requests.
+    // This allows the bot to communicate with an external AI server for decision making.
     if (!ai_curl) {
         curl_global_init(CURL_GLOBAL_DEFAULT);
         ai_curl = curl_easy_init();
     }
-
     // Rest of the original BotSpawnInit code...
 {
 	int i;
-//	ALERT(at_console, "BotSpawnInit\n");
-	pBot->f_max_speed = CVAR_GET_FLOAT("sv_maxspeed");/* * speed_mod[pBot->bot_skill];*/
-	pBot->v_curr_direction = g_vecZero;
-	pBot->v_prev_origin = Vector(9999.0f, 9999.0f, 9999.0f);
-	pBot->prev_time = gpGlobals->time;
+    // Uncomment for debugging: prints a message when bot is spawned
+    // ALERT(at_console, "BotSpawnInit\n");
+    // --- MOVEMENT AND WAYPOINTS ---
+    pBot->f_max_speed = CVAR_GET_FLOAT("sv_maxspeed"); // Set bot's max speed from server cvar
+    pBot->v_curr_direction = g_vecZero;                // Current movement direction
+    pBot->v_prev_origin = Vector(9999.0f, 9999.0f, 9999.0f); // Previous position (set far away)
+    pBot->prev_time = gpGlobals->time;                 // Last update time
+
+    // --- ITEM AND CHAT STATE ---
+    pBot->pBotPickupItem = nullptr;                    // No item targeted for pickup
+    strcpy(pBot->debugchat, "\0");                   // Clear debug chat buffer
+
+    // --- WAYPOINT LOGIC ---
+    pBot->waypoint_origin = Vector(0, 0, 0);           // Current waypoint position
+    pBot->f_ignore_wpt_time = 0.0f;                    // Time to ignore waypoints
+    pBot->f_waypoint_time = 0.0f;                      // Time to next waypoint update
+    pBot->curr_waypoint_index = -1;                    // No current waypoint
+    pBot->item_waypoint = -1;                          // No item waypoint
+    for (i = 0; i < 5; i++)
+        pBot->prev_waypoint_index[i] = -1;             // Clear previous waypoints
+    pBot->f_random_waypoint_time = gpGlobals->time;    // Next time to pick random waypoint
+    pBot->waypoint_goal = -1;                          // No goal waypoint
+    pBot->f_waypoint_goal_time = gpGlobals->time + 1.0f; // Time to reach goal waypoint
+    pBot->waypoint_near_flag = FALSE;                  // Not near a flag
+    pBot->waypoint_flag_origin = Vector(0, 0, 0);      // Flag position
+    pBot->prev_waypoint_distance = 0.0f;               // Distance to previous waypoint
+    pBot->v_goal = g_vecZero;                          // Goal position
+    pBot->f_goal_proximity = 0.0f;                     // Proximity to goal
+    pBot->f_random_turn_time = 0.0f;                   // When to randomly turn
+
+    // --- DROP/AVOIDANCE LOGIC ---    50/50 chance to avoid drop
+    pBot->f_check_drop_time = 0.0f;                    // Next time to check for drops
+    pBot->f_avoid_drop_time = 0.0f;                    // Avoid drop until this time
+    for (i = 0; i < 6; i++)
+        pBot->exclude_points[i] = -1;                  // Points to avoid
+    pBot->wpt_goal_type = WPT_GOAL_NONE;               // No special waypoint goal
+    pBot->f_evaluate_goal_time = 0.0f;                 // Next time to evaluate goal
+
+    // --- ENEMY/COMBAT STATE ---
+    pBot->b_engaging_enemy = FALSE;                    // Not currently engaging enemy
+    pBot->f_engage_enemy_check = 0.0f;                 // Next time to check for engagement
+    pBot->blinded_time = 0.0f;                         // Time blinded
+
+    // --- MOVEMENT/PAUSE/ITEM/OBSTACLE ---
+    pBot->prev_speed = 0.0f;                           // Used for stuck detection
+    pBot->f_find_item = 0.0f;                          // Next time to look for items
+    pBot->ladder_dir = LADDER_UNKNOWN;                 // Not on ladder
+    pBot->f_start_use_ladder_time = 0.0f;              // Time started using ladder
+    pBot->f_end_use_ladder_time = 0.0f;                // Time finished using ladder
+    pBot->f_wall_check_time = 0.0f;                    // Next time to check for walls
+    pBot->f_wall_on_right = 0.0f;                      // Wall on right side
+    pBot->f_wall_on_left = 0.0f;                       // Wall on left side
+    pBot->f_dont_avoid_wall_time = 0.0f;               // When to stop avoiding walls
+    pBot->f_look_for_waypoint_time = 0.0f;             // Next time to look for waypoint
+    pBot->f_jump_time = 0.0f;                          // Next time to jump
+    pBot->f_delay_duck_time = 0.0f;                    // Delay for ducking
+    pBot->f_do_duck_time = 0.0f;                       // Duck duration
+    pBot->f_dont_check_stuck = 0.0f;                   // When to stop checking for stuck
+
+    // --- SENSING AND WANDER ---
+    pBot->f_sound_sensitivity = sound_sense[pBot->bot_skill]; // How far the bot can "hear"
+    // Randomly pick a wander direction (left/right)
+    if (RANDOM_LONG(1, 100) <= 50)
+        pBot->wander_dir = WANDER_LEFT;
+    else
+        pBot->wander_dir = WANDER_RIGHT;
+    pBot->f_exit_water_time = 0.0f;                    // Time to exit water
+
+    // --- DAMAGE AND AVOIDANCE ---
+    pBot->dmg_origin = g_vecZero;                      // Where damage came from
+    pBot->f_dmg_time = 0.0f;                           // Time of last damage
+    pBot->pAvoid = nullptr;                            // Entity to avoid
+    pBot->f_avoid_time = 0.0f;                         // Avoid until this time
+    pBot->f_do_avoid_time = 0.0f;                      // Time to perform avoid
+    pBot->avoid_dir = g_vecZero;                       // Direction to avoid
+
+    // --- ENEMY TRACKING ---
+    pBot->b_last_engage = FALSE;                       // Was last action engaging enemy
+    pBot->pBotEnemy = nullptr;                         // No current enemy
+    pBot->f_bot_see_enemy_time = gpGlobals->time;      // Last time bot saw enemy
+    pBot->f_bot_find_enemy_time = gpGlobals->time;     // Last time bot looked for enemy
+    pBot->f_aim_tracking_time = 0.0f;                  // Time spent tracking aim
+    pBot->f_aim_x_angle_delta = 0.0f;                  // X angle adjustment
+    pBot->f_aim_y_angle_delta = 0.0f;                  // Y angle adjustment
+    pBot->f_assess_grenade_time = 0.0f;                // Next time to consider grenade
+    pBot->f_reload_time = 0.0f;                        // Next time to reload
+    pBot->f_combat_longjump = 0.0f;                    // Next time to longjump in combat
+    pBot->f_longjump_time = 0.0f;                      // Next time to longjump
+    pBot->b_combat_longjump = FALSE;                   // Not using longjump
+    pBot->b_strafe_direction = RANDOM_LONG(0,1) ? true : false; // Random strafe dir
+    pBot->f_strafe_chng_dir = 0.0f;                    // Next time to change strafe dir
+
+    // --- SPECIAL ABILITIES ---
+    pBot->f_mindray_regen_time = 0.0f;                 // Mindray regeneration
+    pBot->pBotUser = nullptr;                          // Entity bot is using
+    pBot->f_bot_use_time = 0.0f;                       // Time to use entity
+    pBot->f_sniper_aim_time = 0.0f;                    // Sniper aim time
+
+    // --- WEAPON/SHOOTING STATE ---
+    pBot->f_switch_weapon_time = gpGlobals->time;      // Next time to switch weapon
+    pBot->f_shoot_time = gpGlobals->time;              // Next time to shoot
+    pBot->f_primary_charging = -1.0f;                  // Primary fire charging
+    pBot->f_secondary_charging = -1.0f;                // Secondary fire charging
+    pBot->charging_weapon_id = 0;                      // Weapon being charged
+
+    // --- PAUSE AND SOUND ---
+    pBot->f_pause_time = 0.0f;                         // Pause until this time
+    pBot->f_sound_update_time = 0.0f;                  // Next time to update sound
+    pBot->bot_has_flag = FALSE;                        // If bot is carrying a flag
+    // (Tripmine logic commented out - enable if using tripmines)
+    // pBot->b_see_tripmine = FALSE;
+    // pBot->b_shoot_tripmine = FALSE;
+    // pBot->v_tripmine = Vector(0,0,0);
 	
-	pBot->pBotPickupItem = nullptr;
+    // --- INTERACTION STATE ---
+    pBot->b_use_health_station = FALSE;                // Using health station
+    pBot->f_use_health_time = 0.0f;                    // Time at health station
+    pBot->b_use_HEV_station = FALSE;                   // Using HEV station
+    pBot->f_use_HEV_time = 0.0f;                       // Time at HEV station
+    pBot->b_use_button = FALSE;                        // Using a button
+    pBot->f_use_button_time = 0.0f;                    // Time at button
+    pBot->b_lift_moving = FALSE;                       // On a moving lift
+    pBot->f_reaction_target_time = 0.0f;               // Reaction time for target
 
-	strcpy(pBot->debugchat, "\0");
+    // --- MOD-SPECIFIC LOGIC (Science & Industry) ---
+    pBot->b_longjump = FALSE;                          // Has longjump ability
+    if (mod_id == SI_DLL)
+    {   // Science & Industry mod: check for researched upgrades
+        // If the team has researched or stolen the 'LEGS_2' upgrade, enable longjump
+        if (g_Researched[UTIL_GetTeam(pBot->pEdict)][RESEARCH_LEGS_2].researched ||
+            g_Researched[UTIL_GetTeam(pBot->pEdict)][RESEARCH_LEGS_2].stolen)
+            pBot->b_longjump = TRUE; // Enable longjump ability
 
-	pBot->waypoint_origin = Vector(0, 0, 0);
-	pBot->f_ignore_wpt_time = 0.0f;
-	pBot->f_waypoint_time = 0.0f;
-	pBot->curr_waypoint_index = -1;
-	pBot->item_waypoint = -1;
-	for (i = 0; i < 5; i++)
-		pBot->prev_waypoint_index[i] = -1;
-	
-	pBot->f_random_waypoint_time = gpGlobals->time;
-	pBot->waypoint_goal = -1;
-	pBot->f_waypoint_goal_time = gpGlobals->time + 1.0f;
-	pBot->waypoint_near_flag = FALSE;
-	pBot->waypoint_flag_origin = Vector(0, 0, 0);
-	pBot->prev_waypoint_distance = 0.0f;
-	pBot->v_goal = g_vecZero;
-	pBot->f_goal_proximity = 0.0f;
-	// how often we randomly turn
-	pBot->f_random_turn_time = 0.0f;
+        // Set maximum armor based on research upgrades
+        // This section checks for researched armor upgrades and applies them to the bot's max armor.
+        if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].researched ||
+             g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].stolen) &&
+            !g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].disabled &&
+            pBot->max_armor < 100)
+            pBot->max_armor = 100;
+        else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].researched ||
+                  g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].stolen) &&
+                 !g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].disabled &&
+                 pBot->max_armor < 75)
+            pBot->max_armor = 75;
+        else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].researched ||
+                  g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].stolen) &&
+                 !g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].disabled &&
+                 pBot->max_armor < 50)
+            pBot->max_armor = 50;
+        else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].researched ||
+                  g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].stolen) &&
+                 !g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].disabled &&
+                 pBot->max_armor < 25)
+            pBot->max_armor = 25; // Set max armor to 25 if upgrade is researched
 
-	pBot->f_check_drop_time = 0.0f;
-	pBot->f_avoid_drop_time = 0.0f;
-
-	for (i = 0; i < 6; i++)
-		pBot->exclude_points[i] = -1;
-
-	pBot->wpt_goal_type = WPT_GOAL_NONE;
-	pBot->f_evaluate_goal_time = 0.0f;
-
-	pBot->b_engaging_enemy = FALSE;
-	pBot->f_engage_enemy_check = 0.0f;
-
-	pBot->blinded_time = 0.0f;
-	
-	pBot->prev_speed = 0.0f;  // fake "paused" since bot is NOT stuck
-	
-	pBot->f_find_item = 0.0f;
-	
-	pBot->ladder_dir = LADDER_UNKNOWN;
-	pBot->f_start_use_ladder_time = 0.0f;
-	pBot->f_end_use_ladder_time = 0.0f;
-	
-	pBot->f_wall_check_time = 0.0f;
-	pBot->f_wall_on_right = 0.0f;
-	pBot->f_wall_on_left = 0.0f;
-	pBot->f_dont_avoid_wall_time = 0.0f;
-	pBot->f_look_for_waypoint_time = 0.0f;
-	pBot->f_jump_time = 0.0f;
-	pBot->f_delay_duck_time = 0.0f;
-	pBot->f_do_duck_time = 0.0f;
-	pBot->f_dont_check_stuck = 0.0f;
-	
-	pBot->f_sound_sensitivity = sound_sense[pBot->bot_skill];
-
-	// pick a wander direction (50% of the time to the left, 50% to the right)
-	if (RANDOM_LONG(1, 100) <= 50)
-		pBot->wander_dir = WANDER_LEFT;
-	else
-		pBot->wander_dir = WANDER_RIGHT;
-	
-	pBot->f_exit_water_time = 0.0f;
-	
-	pBot->dmg_origin = g_vecZero;
-	pBot->f_dmg_time = 0.0f;
-
-	pBot->pAvoid = nullptr;
-	pBot->f_avoid_time = 0.0f;
-	pBot->f_do_avoid_time = 0.0f;
-	pBot->avoid_dir = g_vecZero;
-
-	pBot->b_last_engage = FALSE;
-	pBot->pBotEnemy = nullptr;
-	pBot->f_bot_see_enemy_time = gpGlobals->time;
-	pBot->f_bot_find_enemy_time = gpGlobals->time;
-	pBot->f_aim_tracking_time = 0.0f;
-	pBot->f_aim_x_angle_delta = 0.0f;
-	pBot->f_aim_y_angle_delta = 0.0f;
-	pBot->f_assess_grenade_time = 0.0f;
-	pBot->f_reload_time = 0.0f;
-	pBot->f_combat_longjump = 0.0f;
-	pBot->f_longjump_time = 0.0f;
-	pBot->b_combat_longjump = FALSE;
-	pBot->b_strafe_direction = RANDOM_LONG(0,1) ? true : false;
-	pBot->f_strafe_chng_dir = 0.0f;
-
-	pBot->f_mindray_regen_time = 0.0f;
-
-	pBot->pBotUser = nullptr;
-	pBot->f_bot_use_time = 0.0f;
-	pBot->f_sniper_aim_time = 0.0f;
-	
-	pBot->f_switch_weapon_time = gpGlobals->time;
-	pBot->f_shoot_time = gpGlobals->time;
-	pBot->f_primary_charging = -1.0f;
-	pBot->f_secondary_charging = -1.0f;
-	pBot->charging_weapon_id = 0;
-	
-	pBot->f_pause_time = 0.0f;
-	pBot->f_sound_update_time = 0.0f;
-	pBot->bot_has_flag = FALSE;
-	
-//	pBot->b_see_tripmine = FALSE;
-//	pBot->b_shoot_tripmine = FALSE;
-//	pBot->v_tripmine = Vector(0,0,0);
-	
-	pBot->b_use_health_station = FALSE;
-	pBot->f_use_health_time = 0.0f;
-	pBot->b_use_HEV_station = FALSE;
-	pBot->f_use_HEV_time = 0.0f;
-	
-	pBot->b_use_button = FALSE;
-	pBot->f_use_button_time = 0.0f;
-	pBot->b_lift_moving = FALSE;
-	
-	pBot->f_reaction_target_time = 0.0f;
-
-	pBot->b_longjump = FALSE;
-
-	if (mod_id == SI_DLL)
-	{	// get longjump
-		if (g_Researched[UTIL_GetTeam(pBot->pEdict)][RESEARCH_LEGS_2].researched ||
-		g_Researched[UTIL_GetTeam(pBot->pEdict)][RESEARCH_LEGS_2].stolen)
-			pBot->b_longjump = TRUE;
-
-		// get our max armor
-		if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_ARMOR_100].disabled &&
-			pBot->max_armor < 100)
-			pBot->max_armor = 100;
-		else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_ARMOR_75].disabled &&
-			pBot->max_armor < 75)
-			pBot->max_armor = 75;
-		else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_ARMOR_50].disabled &&
-			pBot->max_armor < 50)
-			pBot->max_armor = 50;
-		else if ((g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_ARMOR_25].disabled &&
-			pBot->max_armor < 25)
-			pBot->max_armor = 25;
-
-		// get our max health
-		if ((g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].disabled &&
-			pBot->max_health < 150)
-			pBot->max_health = 150;
-		else if ((g_Researched[pBot->bot_team][RESEARCH_STRENGTH].researched ||
-			g_Researched[pBot->bot_team][RESEARCH_STRENGTH].stolen) &&
-			!g_Researched[pBot->bot_team][RESEARCH_STRENGTH].disabled &&
-			pBot->max_health < 125)
-			pBot->max_health = 125;
-	}
+        // Set maximum health based on research upgrades
+        // This section checks for researched health upgrades and applies them to the bot's max health.
+        if ((g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].researched ||
+             g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].stolen) &&
+            !g_Researched[pBot->bot_team][RESEARCH_STRENGTH2].disabled &&
+            pBot->max_health < 150)
+            pBot->max_health = 150;
+        else if ((g_Researched[pBot->bot_team][RESEARCH_STRENGTH].researched ||
+            g_Researched[pBot->bot_team][RESEARCH_STRENGTH].stolen) &&
+            !g_Researched[pBot->bot_team][RESEARCH_STRENGTH].disabled &&
+            pBot->max_health < 125)
+            pBot->max_health = 125; // Set max health to 125 if upgrade is researched
+    }
 
 	memset(&(pBot->current_weapon), 0, sizeof(pBot->current_weapon));
 	memset(&(pBot->m_rgAmmo), 0, sizeof(pBot->m_rgAmmo));
@@ -356,44 +381,63 @@ void BotSpawnInit( bot_t *pBot )
 	pBot->b_defend_patrol = false;
 	pBot->defend_wpt = -1;
 
-	// haven't gathered our equipment
-	pBot->f_equip_time = gpGlobals->time;
-	pBot->b_equipped = false;
+    // --- EQUIPMENT AND ROLE STATE ---
+    // This section resets the bot's equipment and role state to default values.
+    pBot->f_equip_time = gpGlobals->time;     // Time to equip
+    pBot->b_equipped = false;                 // Not yet equipped
 
-	// Science and Industry specific
-	pBot->i_carry_type = CARRY_NONE;
-	strcpy(pBot->c_carry_name, "");
+    // --- SCIENCE & INDUSTRY SPECIFIC STATE ---
+    // This section resets the bot's Science & Industry specific state to default values.
+    pBot->i_carry_type = CARRY_NONE;          // Not carrying anything
+    strcpy(pBot->c_carry_name, "");          // Clear carry name
 
-	pBot->f_role_check = 0.0;
+    // --- ROLE CHECK TIMER ---
+    // This section resets the bot's role check timer to default values.
+    pBot->f_role_check = 0.0;
 
-	/*
-	if (!pBot->b_role_locked)
-	{
-		pBot->role = ROLE_NONE;
-		pBot->subrole = ROLE_SUB_NONE;
-	}
-	*/
+    /*
+    // Role reset logic (commented out, can be enabled if roles should reset)
+    if (!pBot->b_role_locked)
+    {
+        pBot->role = ROLE_NONE;
+        pBot->subrole = ROLE_SUB_NONE;
+    }
+    */
 
-	if (!pBot->not_started)
+    // --- GAME START STATE ---
+    // This section checks if the game has started and calls the BotCheckRole function if necessary.
+    if (!pBot->not_started)
 		BotCheckRole(pBot);
 }
 
 
+// =============================
+// BotNameInit
+// -----------------------------
+// Loads bot names from a text file (grave_bot_names.txt) into the bot_names array.
+// Cleans up input by removing newlines and invalid characters.
+// If the file is missing, prints a warning to the server console.
+// =============================
 void BotNameInit()
 {
-//	ALERT(at_console, "BotNameInit\n");
-	FILE *bot_name_fp;
-	char bot_name_filename[256];
-	int str_index;
-	char name_buffer[80];
+	// Uncomment for debugging: print when initializing bot names
+	// ALERT(at_console, "BotNameInit\n");
+
+	FILE *bot_name_fp;                  // File pointer for bot names file
+	char bot_name_filename[256];        // Full path to bot names file
+	int str_index;                      // Index for character cleanup
+	char name_buffer[80];               // Buffer for reading each name
 	int length, index;
 	
+	// Build the full path to the bot names file
 	UTIL_BuildFileName(bot_name_filename, "grave_bot_names.txt", nullptr);
 	
+	// Try to open the bot names file for reading
 	bot_name_fp = fopen(bot_name_filename, "r");
 	
 	if (bot_name_fp != nullptr)
 	{
+		// Read each line (bot name) until we reach the max or end of file
 		while ((number_names < MAX_BOT_NAMES) &&
 			(fgets(name_buffer, 80, bot_name_fp) != nullptr))
 		{
@@ -404,7 +448,7 @@ void BotNameInit()
 				name_buffer[length-1] = 0;  // remove '\n'
 				length--;
 			}
-			
+			// Remove invalid or non-printable characters (including quotes)
 			str_index = 0;
 			while (str_index < length)
 			{
@@ -414,7 +458,7 @@ void BotNameInit()
 						name_buffer[index] = name_buffer[index+1];
 					
 					str_index++;
-			}
+				}
 			
 			if (name_buffer[0] != 0)
 			{
@@ -423,50 +467,60 @@ void BotNameInit()
 				number_names++;
 			}
 		}
-		
+		// Close the file after reading all names
 		fclose(bot_name_fp);
 	}
 	else
 	{
+		// File not found: print a warning to the server console
 		SERVER_PRINT( "Grave Bot - Couldn't find grave_bot_names.txt!\n");
 	}
 }
 
 
+// =============================
+// BotPickName
+// -----------------------------
+// Picks a unique bot name for a new bot.
+// 1. Reuses names from kicked bots if available.
+// 2. Otherwise, randomly selects a name from the loaded bot_names list,
+//    ensuring it is not currently in use by any player.
+// =============================
 void BotPickName( char *name_buffer )
 {
-//	ALERT(at_console, "BotPickName\n");
+	// Uncomment for debugging: print when picking a bot name
+	// ALERT(at_console, "BotPickName\n");
 	int name_index, index;
 	bool used;
 	edict_t *pPlayer;
 	int attempts = 0;
 	
-	// see if a name exists from a kicked bot (if so, reuse it)
+	// First, check for a name from a recently kicked bot (reuse if possible)
 	for (index=0; index < 32; index++)
 	{
 		if ((bots[index].is_used == FALSE) && (bots[index].name[0]))
 		{
-			strcpy(name_buffer, bots[index].name);
-			
+			strcpy(name_buffer, bots[index].name); // Reuse name
 			return;
-		}   
+		}
 	}
 	
+		// Otherwise, pick a random name from the loaded list
 	name_index = RANDOM_LONG(1, number_names) - 1;  // zero based
 	
-	// check make sure this name isn't used
+	// Loop to ensure the randomly chosen name is not already in use by any player
 	used = TRUE;
-	
 	while (used)
 	{
 		used = FALSE;
-		
+		// Check all connected clients for name collision
 		for (index = 1; index <= gpGlobals->maxClients; index++)
 		{
 			pPlayer = INDEXENT(index);
-			
+			// Only consider valid, connected players
 			if (pPlayer && !pPlayer->free && pPlayer->v.flags & FL_CLIENT)
 			{
+				// If the name is already in use, set used flag and break
 				if (strcmp(bot_names[name_index], STRING(pPlayer->v.netname)) == 0)
 				{
 					used = TRUE;
@@ -474,7 +528,7 @@ void BotPickName( char *name_buffer )
 				}
 			}
 		}
-		
+		// If name is used, try the next name (wrap around if needed)
 		if (used)
 		{
 			name_index++;
@@ -483,19 +537,158 @@ void BotPickName( char *name_buffer )
 				name_index = 0;
 			
 			attempts++;
-			
+			// Avoid infinite loop: after trying all names, accept even if duplicate
 			if (attempts == number_names)
 				used = FALSE;  // break out of loop even if already used
 		}
 	}
-	
+	// Assign the chosen (unique or fallback) name to the output buffer
 	strcpy(name_buffer, bot_names[name_index]);
 }
 
 
+// =============================
+// BotCreate
+// -----------------------------
+// Creates and initializes a new bot entity in the game.
+// Parameters:
+//   pPlayer - (optional) player entity that requested the bot, or nullptr
+//   arg1-arg5 - optional arguments for bot customization (e.g., skill, team, skin, etc.)
+// =============================
 void BotCreate( edict_t *pPlayer, const char *arg1, const char *arg2,
 	const char *arg3, const char *arg4, const char *arg5)
 {
+	// Uncomment for debugging: print when creating a bot
+	// ALERT(at_console, "BotCreate\n");
+
+	edict_t *BotEnt;            // Pointer to the bot entity
+	bot_t *pBot;                // Pointer to the bot's data structure
+	char c_skin[BOT_SKIN_LEN+1]; // Skin/model name for the bot
+	char c_name[BOT_NAME_LEN+1]; // Bot's display name
+	int top_color, bottom_color; // Colors for player model (not always used)
+	char c_topcolor[4], c_bottomcolor[4];
+	int skill = 0;
+	int index;
+	int i, j, length;
+	bool found = FALSE;
+	
+	top_color = -1;
+	bottom_color = -1;
+
+	int max_skin_index;
+	max_skin_index = VALVE_MAX_SKINS;
+
+	strcpy(c_skin, "");
+	strcpy(c_name, "");
+
+	/*
+	SERVER_PRINT( "Calling BotCreate: %s %s %s %s %s\n", arg1 ? arg1 : "NULL", arg2 ? arg2 : "NULL",
+		arg3 ? arg3 : "NULL", arg4 ? arg4 : "NULL", arg5 ? arg5 : "NULL");
+	*/
+
+	// --- SKIN/MODEL SELECTION LOGIC ---
+	// If the mod is CrAbbed or Valve, handle skin/model selection
+	if (mod_id == CRABBED_DLL || mod_id == VALVE_DLL)
+	{
+		// If no skin/model argument is given, pick a random unused skin
+		if ((arg1 == nullptr) || (*arg1 == 0) || (strcmp(arg1, "NULL") == 0))
+		{
+			index = RANDOM_LONG(0, VALVE_MAX_SKINS-1);
+			pSkinUsed = &valve_skin_used[0];
+			// Check if this skin has already been used by another bot
+			while (pSkinUsed[index] == TRUE)
+			{
+				index++;
+				if (index == max_skin_index)
+					index = 0;
+			}
+			pSkinUsed[index] = TRUE;
+			// Check if all skins are now used; if so, reset all to FALSE for next selection
+			for (i = 0; i < max_skin_index; i++)
+			{
+				if (pSkinUsed[i] == FALSE)
+					break;
+			}
+			if (i == max_skin_index)
+			{
+				for (i = 0; i < max_skin_index; i++)
+					pSkinUsed[i] = FALSE;
+			}
+			strcpy( c_skin, valve_bot_skins[index] ); // Assign the chosen skin
+		}
+		else
+		{
+			// Use the provided argument as the skin/model
+			strncpy( c_skin, arg1, BOT_SKIN_LEN-1 );
+			c_skin[BOT_SKIN_LEN] = 0;  // Ensure null termination
+		}
+		// Convert skin name to lowercase for consistency
+		for (i = 0; c_skin[i] != 0; i++)
+			c_skin[i] = tolower( c_skin[i] );
+		index = 0;
+		// Search for the skin in the list of known Valve skins
+		while ((!found) && (index < max_skin_index))
+		{
+			if (strcmp(c_skin, valve_bot_skins[index]) == 0)
+				found = TRUE;
+			else
+				index++;
+		}
+		// --- NAME SELECTION LOGIC ---
+		if (found == TRUE)
+		{
+			// If a name is provided, use it; otherwise, pick a random or default name
+			if ((arg2 != nullptr) && (*arg2 != 0) && (strcmp(arg2, "NULL") != 0))
+			{
+				strncpy( c_name, arg2, BOT_SKIN_LEN-1 );
+				c_name[BOT_SKIN_LEN] = 0;  // Ensure null termination
+			}
+			else
+			{
+				if (number_names > 0)
+					BotPickName( c_name ); // Pick a unique name from the list
+				else
+					strcpy( c_name, valve_bot_names[index] ); // Fallback: use default skin name
+			}
+		}
+		else
+		{
+			// --- MODEL EXISTENCE VALIDATION ---
+			// If the skin is not a known Valve skin, check if the model file exists
+			char dir_name[32];        // Buffer for the game directory
+			char filename[128];       // Buffer for the model file path
+			struct stat stat_str;     // Used to check file existence
+			GET_GAME_DIR(dir_name);  // Get the current game directory
+			sprintf(filename, "%s/models/player/%s", dir_name, c_skin); // Build path to model
+			if (stat(filename, &stat_str) != 0)
+			{
+				// Try default Valve directory if not found in mod dir
+				sprintf(filename, "valve/models/player/%s", c_skin);
+				if (stat(filename, &stat_str) != 0)
+				{
+					// Model file not found: print error and abort bot creation
+					char err_msg[80];
+					sprintf( err_msg, "model \"%s\" is unknown.\n", c_skin );
+					SERVER_PRINT( err_msg );
+					SERVER_PRINT("use barney, gina, gman, gordon, helmet, hgrunt,\n");
+					SERVER_PRINT("    recon, robo, scientist, or zombie\n");
+					return;
+				}
+			}
+			// --- NAME SELECTION FOR CUSTOM MODEL ---
+			// If a name is provided, use it; otherwise, pick a unique name from the list
+			if ((arg2 != nullptr) && (*arg2 != 0) && (strcmp(arg2, "NULL") != 0))
+			{
+				strncpy( c_name, arg2, BOT_NAME_LEN-1 );
+				c_name[BOT_NAME_LEN] = 0;  // Ensure null termination
+			}
+			else
+			{
+				if (number_names > 0)
+					BotPickName( c_name ); // Pick a unique name for custom model
+				// If no names are available, c_name remains empty (could add fallback here)
+			}
+
 //	ALERT(at_console, "BotCreate\n");
 	edict_t *BotEnt;
 	bot_t *pBot;
